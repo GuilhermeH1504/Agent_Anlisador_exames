@@ -95,7 +95,7 @@ def call_llm(state: AgentState) -> AgentState:
     print(">call_llm")
     llm = ChatGroq(
         model = "openai/gpt-oss-120b",
-        groq_api_key = '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'
+        groq_api_key = '(SUA CHAVE AQPI AQUI)'
     )
     SYSTEM_PROMPT = SystemMessage(
     "Você é um médico especialista, com amplo conhecimento em todas as áreas da medicina, "
@@ -205,6 +205,7 @@ while True:
 
     final_answer = result["messages"][-1].content
     print(f"🤖 AI: {final_answer}")
+
 
 
 
