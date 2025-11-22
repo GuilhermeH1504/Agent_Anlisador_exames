@@ -80,7 +80,7 @@ def virtual_assistant(state: AgentState) -> AgentState:
     """ Chamando a assistente"""
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
-        google_api_key = "AIzaSyC5q4SZ1LB6Kw8AxVJ_K0h7F0-6znj-Krg"
+        google_api_key = "(SUA CHAVE API AQUI)"
     )
     SYSTEM_MESSAGE = SystemMessage(
     content="""Você é a Clara, Recepcionista.
@@ -172,7 +172,7 @@ def physician_analyst(state: AgentState) -> AgentState:
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         temperature=0.1, # Temperatura baixa para ser preciso nos números
-        google_api_key = "AIzaSyC5q4SZ1LB6Kw8AxVJ_K0h7F0-6znj-Krg" 
+        google_api_key = "(SUA CHAVE API AQUI)" 
     )
     SYSTEM_PROMPT = SystemMessage(
         content="""Seu nome é josé
@@ -308,5 +308,6 @@ while True:
                 msg = value["messages"][-1]
                 if isinstance(msg, AIMessage) and msg.content:
                     print(f"AI {key}: {msg.content}")
+
 
 
