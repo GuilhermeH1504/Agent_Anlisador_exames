@@ -1,136 +1,86 @@
-Este projeto implementa um agente médico especializado, utilizando LangChain, LangGraph e o modelo GPT-OSS-120B (Groq) para:
+# AIDoctor
 
-Ler PDFs de exames médicos;
+AIDoctor e um prototipo de atendimento para clinica com uma interface web em Django.
 
-Extrair e unificar o conteúdo dos arquivos;
+O fluxo tem dois agentes:
 
-Analisar e interpretar exames conforme um System Prompt altamente especializado;
+- Clara: atendente virtual que acolhe, cadastra/localiza pacientes e encaminha assuntos clinicos.
+- Dr. Jose: medico assistente que analisa exames em PDF e responde com orientacao educativa.
 
-Seguir fluxo estruturado com uso de ferramentas (tools) e raciocínio controlado;
+## Funcionalidades
 
-Interagir com o usuário de forma contínua em linha de comando.
+- Interface web local com Django.
+- Cadastro local de pacientes em SQLite.
+- Upload e leitura de exames em PDF.
+- Conversa com a IA usando LangGraph.
+- Encaminhamento da atendente para o medico.
+- Modo terminal preservado em `AIDoctor.py`.
 
-🧠 Funcionalidades Principais
+## Estrutura
 
-🩺 Agente médico inteligente com instruções detalhadas para interpretação correta de exames.
+```text
+.
+|-- manage.py
+|-- aidoctor_site/      # Configuracao Django
+|-- clinic/             # App web da clinica
+|-- AIDoctor.py         # Motor do agente e modo terminal
+|-- patient_store.py    # Banco SQLite de pacientes usado pelo agente
+|-- requirements.txt
+|-- exames/             # PDFs enviados pela interface
+`-- README.md
+```
 
-📄 Carregamento automático de PDFs de exames via ferramenta load_exams.
+## Instalacao
 
-🔗 Integração com LangGraph para fluxo de execução baseado em estados e ferramentas.
+```bash
+pip install -r requirements.txt
+```
 
-⚙️ Chamadas ao modelo ChatGroq (GPT-OSS-120B).
+Copie `.env.example` para `.env` e preencha sua chave:
 
-🔍 Separador automático entre exames para facilitar a leitura do conteúdo.
+```env
+GOOGLE_API_KEY=SUA_CHAVE_AQUI
+EXAMS_FOLDER=exames
+AIDOCTOR_MODEL=gemini-2.5-flash
+DJANGO_DEBUG=1
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+DJANGO_SECRET_KEY=troque-essa-chave-em-producao
+```
 
-📝 Log automático das interações em arquivo AIDoctor.log.
+Tambem e aceito `GEMINI_API_KEY` no lugar de `GOOGLE_API_KEY`.
 
-💬 Sistema interativo CLI, onde o usuário envia perguntas e o agente responde.
+## Rodar Interface Django
 
-📂 Estrutura do Projeto
-AI-Doctor/
-│── main.py                  # Código principal com agente, ferramentas e loop interativo
-│── AIDoctor.log             # Arquivo de logs
-│── exames/                  # Pasta contendo arquivos PDF de exames
-│── .env                     # Chaves e variáveis de ambiente
-│── README.md                # Este arquivo
+```bash
+python manage.py runserver 127.0.0.1:8000
+```
 
-🔧 Dependências
+Abra no navegador:
 
-Certifique-se de instalar:
+```text
+http://127.0.0.1:8000
+```
 
-pip install langchain langchain-core langchain-community
-pip install langgraph
-pip install langchain-groq
-pip install python-dotenv
-pip install pypdf
+## Rodar no Terminal
 
-📌 Configuração
-
-Crie um arquivo .env:
-
-GROQ_API_KEY=SUAS_CHAVE_AQUI
-
-
-Certifique-se de alterar o caminho da pasta dos exames, caso necessário:
-
-FILE_FOLDER = "C:\\Users\\55319\\Documents\\exames"
-
-🧰 Ferramenta: load_exams
-
-A função:
-
-Vasculha a pasta por arquivos .pdf;
-
-Extrai todo o texto com PyPDFLoader;
-
-Junta com separadores personalizados;
-
-Retorna o texto completo para análise pelo LLM.
-
-Exemplo de retorno:
-
-Exames carregados com sucesso: total de '3' encontrados.
---- NOVO CURRÍCULO ---
-[conteúdo do exame 1]
---- NOVO CURRÍCULO ---
-[conteúdo do exame 2]
-...
-
-🧩 Arquitetura com LangGraph
-
-O fluxo contém:
-
-📌 Nós:
-
-call_llm — Envia mensagens ao modelo Groq.
-
-tool_node — Executa ferramentas chamadas pela IA.
-
-📌 Rotas:
-
-Se o modelo pedir ferramenta → vai para tool_node
-
-Caso contrário → encerra (END)
-
-Fluxo:
-
-User → call_llm → (usa ferramenta?) → tool_node → call_llm → ... → END
-
-🩺 System Prompt Médico
-
-O prompt define um agente médico especialista com:
-
-Interpretação de exames
-
-Comparação com referências (somente se o exame fornecer)
-
-Linguagem empática e profissional
-
-Sem diagnósticos fechados
-
-Sem prescrição de medicamentos
-
-O agente também é instruído a usar obrigatoriamente a ferramenta load_exams quando necessário.
-
-🖥️ Como Executar
-
-Execute o script:
-
-python main.py
-
-
-Interaja com o agente:
-
-👤Você: Pode analisar meus exames?
-🤖 AI: Claro! Vou carregar e interpretar seus exames...
-
+```bash
+python AIDoctor.py
+```
 
 Para sair:
 
-quit
+```text
 sair
 exit
+quit
+```
 
-🧪 Exemplo de Uso
-👤Você: Meus exames já estão na pasta, pode carregar?
-🤖 AI: Exames carregados com sucesso: total de '2' encontrados...
+## Proximas Melhorias
+
+- Login para atendente e medico.
+- Historico de atendimentos por paciente.
+- Dashboard de exames pendentes.
+- Admin Django para gerenciar registros.
+- Separacao entre ambiente local e producao.
+
+Este projeto nao substitui consulta medica presencial. O agente medico deve ser usado apenas como apoio educativo e triagem inicial.

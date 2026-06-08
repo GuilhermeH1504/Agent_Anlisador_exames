@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.py[cod]
+AIDoctor.log
+aidoctor.db
+django_admin.sqlite3
+ark.png
+exames/*
+!exames/.gitkeep

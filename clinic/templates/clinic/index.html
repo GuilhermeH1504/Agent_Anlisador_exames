@@ -1,0 +1,134 @@
+{% load static %}
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIDoctor</title>
+  <link rel="stylesheet" href="{% static 'clinic/styles.css' %}">
+  <script defer src="{% static 'clinic/app.js' %}"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M8 3v5"/><path d="M16 3v5"/><path d="M5 8h14"/><path d="M6 8v7a6 6 0 0 0 12 0V8"/><path d="M12 14v5"/><path d="M9.5 16.5h5"/></svg>
+        </div>
+        <div>
+          <h1>AIDoctor</h1>
+          <span>Atendimento local da clinica</span>
+        </div>
+      </div>
+      <div class="status-row">
+        <span id="apiStatus" class="pill warn">API pendente</span>
+        <span id="examStatus" class="pill">0 exames</span>
+        <button id="refreshButton" class="button ghost icon-only" type="button" title="Atualizar">
+          <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel side">
+        <div class="panel-header">
+          <h2>Paciente</h2>
+        </div>
+        <div class="panel-body stack">
+          <form id="patientForm" class="stack">
+            <div class="field">
+              <label for="patientName">Nome</label>
+              <input id="patientName" class="input" name="patient_name" autocomplete="name" required>
+            </div>
+            <div class="field">
+              <label for="patientAge">Idade</label>
+              <input id="patientAge" class="input" name="age" type="number" min="1" required>
+            </div>
+            <div class="field">
+              <label for="patientPhone">Telefone</label>
+              <input id="patientPhone" class="input" name="telephone" autocomplete="tel" required>
+            </div>
+            <button class="button primary" type="submit">
+              <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/></svg>
+              Cadastrar
+            </button>
+          </form>
+
+          <div class="divider"></div>
+
+          <form id="examForm" class="file-drop">
+            <div class="field">
+              <label for="examFile">PDF de exame</label>
+              <input id="examFile" class="input" name="exam" type="file" accept="application/pdf,.pdf" multiple>
+            </div>
+            <button class="button" type="submit">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+              Enviar PDF
+            </button>
+          </form>
+
+          <ul id="examList" class="list"></ul>
+        </div>
+      </aside>
+
+      <section class="panel chat">
+        <div class="panel-header">
+          <h2>Conversa clinica</h2>
+          <button id="clearChat" class="button ghost icon-only" type="button" title="Nova conversa">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          </button>
+        </div>
+        <div class="quick-actions">
+          <button class="button" data-prompt="Quero falar com o medico." type="button">
+            <svg viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+            Medico
+          </button>
+          <button class="button" data-prompt="Meus exames estao na pasta. Pode analisar?" type="button">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
+            Exames
+          </button>
+          <button class="button" data-prompt="Pode verificar se o paciente ja tem cadastro?" type="button">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
+            Buscar
+          </button>
+        </div>
+        <div id="messages" class="messages"></div>
+        <form id="chatForm" class="composer">
+          <textarea id="chatInput" class="textarea" rows="2" placeholder="Digite a mensagem do paciente..." required></textarea>
+          <button id="sendButton" class="button coral" type="submit">
+            <svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+            Enviar
+          </button>
+        </form>
+      </section>
+
+      <aside class="panel insights">
+        <div class="panel-header">
+          <h2>Painel da clinica</h2>
+        </div>
+        <div class="panel-body stack">
+          <div class="metric-grid">
+            <div class="metric">
+              <strong id="patientCount">0</strong>
+              <span>pacientes</span>
+            </div>
+            <div class="metric">
+              <strong id="examCount">0</strong>
+              <span>PDFs</span>
+            </div>
+          </div>
+          <div id="apiNotice" class="notice hidden"></div>
+          <div class="field">
+            <label>Pasta de exames</label>
+            <div id="examFolder" class="list-item"><span>Carregando...</span></div>
+          </div>
+          <div class="field">
+            <label>Recentes</label>
+            <ul id="patientList" class="list"></ul>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>
