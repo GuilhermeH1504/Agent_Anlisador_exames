@@ -1,313 +1,376 @@
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, ToolMessage
-from langgraph.graph.message import add_messages
-from typing import TypedDict, Sequence, Literal, Annotated, List, Dict
-from langchain_core.tools import tool, BaseTool
-from langchain_core.messages import BaseMessage, ToolMessage
-from dotenv import load_dotenv
-import os
+from __future__ import annotations
+
 import logging
-import re
-from sqlmodel import SQLModel, Session, select
-from memoria import Memory, engine
-from langgraph.graph.state import CompiledStateGraph
-from pydantic import ValidationError
+import os
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated, Literal, Sequence, TypedDict
+
+from dotenv import load_dotenv
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.tools import BaseTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from rich import print
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+
+from patient_store import create_patient_record, find_patients, init_db
+
 
 load_dotenv()
 
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_EXAMS_FOLDER = PROJECT_DIR / "exames"
+DEFAULT_THREAD_ID = "paciente_01"
+DEFAULT_MODEL = "gemini-2.5-flash"
+
 logging.basicConfig(
-    filename="AIDoctor.log",
+    filename=str(PROJECT_DIR / "AIDoctor.log"),
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)                                                           
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
-# CRIANDO UMA VARIAVEL GLOBAL, ONDE TODOS OS EXAMES MEDICOS ESTÃO
-
-FILE_FOLDER = os.getenv("EXAMS_FOLDER", "C:\\Users\\55319\\Documents\\exames")
-
-#DEFININDO O ESTADO DO AGENT
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
+RECEPTION_PROMPT = SystemMessage(
+    content=(
+        "Voce e a Clara, atendente virtual de uma clinica.\n"
+        "Seu papel e acolher o paciente, localizar ou cadastrar dados basicos "
+        "e encaminhar para o medico quando o assunto exigir avaliacao clinica.\n\n"
+        "Fluxo:\n"
+        "1. Para consultar paciente, use check_patient.\n"
+        "2. Para cadastrar paciente, use create_patient.\n"
+        "3. Se o usuario quiser falar com medico, analisar exames ou tirar duvidas "
+        "de saude, use imediatamente transfer_to_physician. Nao responda como medico.\n"
+        "4. Seja breve, educada e profissional."
+    )
+)
+
+PHYSICIAN_PROMPT = SystemMessage(
+    content=(
+        "Seu nome e Dr. Jose. Voce e um medico assistente especializado em "
+        "interpretacao inicial de exames e orientacao clinica educativa.\n\n"
+        "Quando precisar ler PDFs de exames, use a ferramenta load_exams. Depois "
+        "analise o conteudo encontrado com clareza, incluindo:\n"
+        "- valores identificados no exame;\n"
+        "- comparacao com referencias apenas quando o proprio exame trouxer referencias;\n"
+        "- possiveis significados clinicos;\n"
+        "- sinais de alerta quando houver risco potencial;\n"
+        "- orientacao geral sem diagnostico definitivo e sem prescrever medicamentos.\n\n"
+        "Mantenha tom empatico, profissional e educativo. Sempre deixe claro que "
+        "a avaliacao presencial com um profissional de saude e necessaria para "
+        "confirmacao e conduta."
+    )
+)
+
+NODE_LABELS = {
+    "virtual_assistant": "Clara",
+    "physician_analyst": "Dr. Jose",
+    "reception_tools": "Sistema",
+    "physician_tools": "Sistema",
+    "handoff_tools": "Sistema",
+}
+
+
+def get_exams_folder() -> Path:
+    folder = os.getenv("EXAMS_FOLDER")
+    if folder:
+        return Path(folder).expanduser()
+    return DEFAULT_EXAMS_FOLDER
+
+
+def is_api_configured() -> bool:
+    return bool(_get_google_api_key())
+
+
+def _get_google_api_key() -> str | None:
+    return os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+
+def _build_llm(*, temperature: float = 0.2) -> ChatGoogleGenerativeAI:
+    api_key = _get_google_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "Configure GOOGLE_API_KEY ou GEMINI_API_KEY no arquivo .env antes "
+            "de conversar com a IA."
+        )
+
+    return ChatGoogleGenerativeAI(
+        model=os.getenv("AIDOCTOR_MODEL", DEFAULT_MODEL),
+        temperature=temperature,
+        google_api_key=api_key,
+    )
+
+
 @tool
-def check_patient(patient_name: str):
-    """ Função que verifica o banco de daods"""
+def check_patient(patient_name: str) -> str:
+    """Consulta pacientes cadastrados pelo nome."""
     try:
-        with Session(engine) as session:
-            statements = select(Memory).where(Memory.patient_name == patient_name)
-            results = session.exec(statements).all()
+        patients = find_patients(patient_name)
+        if not patients:
+            return "Nenhum paciente encontrado com esse nome."
 
-            if not results:
-                return "Nenhum paciente encontrado com esse nome"
-
-            response = "Paciente(s), encontrado(s): \n"
-            for p in results:
-                response += f" - Nome:{p.patient_name}, Idade:{p.age}, Tel:{p.telephone}"
-
-            return response
-    except Exception as e:
-        return f"Erro ao consultar banco de dados: {str(e)}"
-
-
-@tool
-def create_patient(patient_name: str, age: int, telephone: int) -> str:
-    """ Função que salva paciente no banco de dados para consulta"""
-    try:
-        with Session(engine) as session:
-            patient = Memory(
-                patient_name=patient_name,
-                age=age,
-                telephone=telephone
+        lines = ["Paciente(s) encontrado(s):"]
+        for patient in patients:
+            lines.append(
+                f"- Nome: {patient.patient_name}, Idade: {patient.age}, "
+                f"Telefone: {patient.telephone}"
             )
-            session.add(patient)
-            session.commit()
-            session.refresh(patient)
-            logging.info(f"Paciente '{patient_name}' cadastrado com sucesso")
-            return f"Paciente '{patient_name}' cadastrado com sucesso no banco de dados."
-    except Exception as e:
-        error_msg = f"Erro ao cadastrar paciente: {str(e)}"
-        logging.error(error_msg)
-        return error_msg
+        return "\n".join(lines)
+    except Exception as exc:
+        logging.exception("Erro ao consultar paciente")
+        return f"Erro ao consultar banco de dados: {exc}"
+
+
+@tool
+def create_patient(patient_name: str, age: int, telephone: str) -> str:
+    """Cadastra um novo paciente com nome, idade e telefone."""
+    try:
+        patient = create_patient_record(
+            patient_name=patient_name,
+            age=age,
+            telephone=telephone,
+        )
+        logging.info("Paciente '%s' cadastrado com sucesso", patient.patient_name)
+        return f"Paciente '{patient.patient_name}' cadastrado com sucesso."
+    except Exception as exc:
+        logging.exception("Erro ao cadastrar paciente")
+        return f"Erro ao cadastrar paciente: {exc}"
+
+
+@tool
+def transfer_to_physician() -> str:
+    """Encaminha a conversa para o medico quando houver assunto clinico."""
+    return "Solicitacao de transferencia para o medico recebida."
+
+
+@tool
+def load_exams(path: str = "") -> str:
+    """Carrega PDFs de exames medicos de uma pasta e extrai o texto."""
+    folder = Path(path).expanduser() if path else get_exams_folder()
+
+    if not folder.exists():
+        return f"Pasta de exames nao encontrada: {folder}"
+    if not folder.is_dir():
+        return f"O caminho informado nao e uma pasta: {folder}"
+
+    pdf_files = sorted(folder.glob("*.pdf"))
+    if not pdf_files:
+        return f"Nenhum arquivo PDF encontrado na pasta: {folder}"
+
+    exams: list[str] = []
+    errors: list[str] = []
+    for pdf_file in pdf_files:
+        try:
+            exams.append(_extract_pdf_text(pdf_file))
+        except Exception as exc:
+            logging.exception("Erro ao extrair exame %s", pdf_file)
+            errors.append(f"{pdf_file.name}: {exc}")
+
+    if not exams:
+        return "Nao foi possivel extrair texto dos exames. " + " | ".join(errors)
+
+    separator = "\n\n--- NOVO EXAME ---\n\n"
+    content = separator.join(exams)
+    result = (
+        f"Exames carregados com sucesso: total de {len(exams)} encontrado(s).\n"
+        f"{content}"
+    )
+    if errors:
+        result += "\n\nArquivos com erro:\n" + "\n".join(errors)
+    return result
+
+
+def _extract_pdf_text(pdf_file: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("Instale a dependencia pypdf: pip install pypdf") from exc
+
+    reader = PdfReader(str(pdf_file))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    text = "\n".join(page.strip() for page in pages if page.strip())
+    if not text:
+        return f"Arquivo: {pdf_file.name}\n[PDF sem texto extraivel]"
+    return f"Arquivo: {pdf_file.name}\n{text}"
+
 
 def virtual_assistant(state: AgentState) -> AgentState:
-    """ Chamando a assistente"""
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key = "(SUA CHAVE API AQUI)"
-    )
-    SYSTEM_MESSAGE = SystemMessage(
-    content="""Você é a Clara, Recepcionista.
-    FLUXO:
-    1. Cadastro: Use 'check_patient' e 'create_patient'.
-    2. Médico: Se o usuário quiser falar com médico ou ver exames, NUNCA responda com texto. 
-       USE IMEDIATAMENTE a ferramenta 'transfer_to_physician'.
-    """)
-    
-    TOOL: List[BaseTool] = [create_patient, check_patient, transfer_to_physician]
-    llm_with_tool = llm.bind_tools(TOOL)
-    llm_messages = [SYSTEM_MESSAGE] + list(state["messages"])
-    llm_result = llm_with_tool.invoke(llm_messages)
-    return {
-        "messages": [llm_result]
-    }
+    llm = _build_llm(temperature=0.3)
+    tools: list[BaseTool] = [create_patient, check_patient, transfer_to_physician]
+    result = llm.bind_tools(tools).invoke([RECEPTION_PROMPT] + list(state["messages"]))
+    return {"messages": [result]}
 
 
-@tool
-def load_exams(path: str = FILE_FOLDER) -> str:
-    """Carrega e extrai o conteúdo de arquivos PDF de exames médicos.
-    
-    Esta função busca todos os arquivos PDF em um diretório especificado,
-    extrai o texto de cada arquivo e retorna uma string formatada contendo
-    todo o conteúdo dos exames separados por um delimitador.
-    
-    Args:
-        path: Caminho do diretório contendo os arquivos PDF de exames médicos.
-            Por padrão, usa a variável global FILE_FOLDER.
-            
-    Returns:
-        String formatada contendo:
-        - Mensagem de sucesso com o número de exames encontrados
-        - Conteúdo completo de todos os exames separados por delimitador
-        - Mensagem de erro caso nenhum arquivo seja encontrado ou ocorra exceção
-        
-    Raises:
-        FileNotFoundError: Quando o diretório especificado não existe.
-        Exception: Quando ocorre erro ao extrair conteúdo dos PDFs.
-        
-    Example:
-        >>> result = load_exams("C:\\Users\\55319\\Documents\\exames")
-        >>> print(result)
-        "Exames carregador com sucesso: total de '3' encontrados, conteudo..."
-    """
-
-    try:
-        exams_file = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".pdf")]
-        exams = [] # lista para armazenar os exames extraidos
-
-        if not exams_file:
-            return f" Nenhum arquivo encontado na pasta: {path}"
-
-        for file in exams_file:
-            load = PyPDFLoader(file)
-            docs = load.load()
-
-            text_exams = "\n".join(p.page_content for p in docs)
-            exams.append(text_exams)
-
-        # Definindo um separador entre os exames
-
-        separador = "\n--- NOVO CURRÍCULO ---\n"
-        text = separador.join(exams) 
-
-        return f"Exames carregador com sucesso: total de '{len(exams)}' encontrados, conteudo a ser analisado '{text}'"
-
-
-    except FileNotFoundError:
-        print("Erro ao carregar exames")
-    except Exception as e:
-        return f" Erro ao estrair conteudo de {exams}"
-
-@tool
-def transfer_to_physician():
-    """
-    Use esta ferramenta APENAS quando o usuário quiser:
-    - Falar com o médico.
-    - Analisar exames.
-    - Tirar dúvidas de saúde.
-    Não precisa de argumentos.
-    """
-    return "Solicitação de transferência para o médico recebida."
-
-#Chamada da LLM
 def physician_analyst(state: AgentState) -> AgentState:
-    "Chamamando o modelo da llm"
-    print(">call_llm")
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.1, # Temperatura baixa para ser preciso nos números
-        google_api_key = "(SUA CHAVE API AQUI)" 
-    )
-    SYSTEM_PROMPT = SystemMessage(
-        content="""Seu nome é josé
-Você é um médico especialista, com amplo conhecimento em todas as áreas da medicina, 
-incluindo clínica geral, cardiologia, nefrologia, hematologia, endocrinologia, bioquímica 
-e interpretação laboratorial.
-
-Sua função é analisar exames médicos enviados pelo paciente, explicando de forma clara, 
-detalhada e compreensível.
-
-Sempre que necessário, você deve extrair os dados dos exames utilizando a ferramenta 
-'load_exams'. Após obter as informações, faça uma análise completa que contenha:
-- Interpretação dos valores encontrados;
-- Comparação com valores de referência (sem inventar valores, só use se o exame fornecer);
-- Possíveis significados clínicos dos achados;
-- Alertas quando houver risco potencial;
-- Orientação geral baseada no exame (sem diagnóstico definitivo nem prescrição).
-
-O tom da comunicação deve ser empático, profissional e educativo. 
-Nunca faça diagnósticos fechados, não prescreva medicamentos e sempre lembre o paciente 
-da importância de consultar um médico presencial para confirmação.
-
-IMPORTANTE: Responda apenas com o conteúdo solicitado, sem adicionar disclaimers, assinaturas, avisos ou informações sobre o modelo."""
-    )
-    TOOL: List[BaseTool] = [load_exams, ]
-    llm_with_tools = llm.bind_tools(TOOL)
-    messages_to_llm = [SYSTEM_PROMPT] + list(state["messages"])
-    llm_result = llm_with_tools.invoke(messages_to_llm)
-
-    return {
-        "messages": [llm_result]
-    }
+    llm = _build_llm(temperature=0.1)
+    tools: list[BaseTool] = [load_exams]
+    result = llm.bind_tools(tools).invoke([PHYSICIAN_PROMPT] + list(state["messages"]))
+    return {"messages": [result]}
 
 
-def tool_node(state: AgentState) -> AgentState:
-    print("> tool_node")
+def _execute_tools(state: AgentState, tool_map: dict[str, BaseTool]) -> AgentState:
     last_message = state["messages"][-1]
+    outputs: list[ToolMessage] = []
 
-    tool_map = {
-        "load_exams": load_exams,
-        "create_patient": create_patient,
-        "check_patient": check_patient,
-        "transfer_to_physician": transfer_to_physician
-    }
-
-    outputs = []
-    for tool_call in last_message.tool_calls:
+    for tool_call in getattr(last_message, "tool_calls", []):
         tool_name = tool_call["name"]
-        if tool_name in tool_map:
-            print(f" Execultando: {tool_name}")
-            try:
-                res = tool_map[tool_name].invoke(tool_call["args"])
-            except Exception as e:
-                res = f"Erro:{e}"
+        tool_to_run = tool_map.get(tool_name)
+
+        if not tool_to_run:
+            result = f"Ferramenta nao encontrada: {tool_name}"
         else:
-            res = "Ferramenta não encontrada"
+            try:
+                logging.info("Executando ferramenta %s", tool_name)
+                result = tool_to_run.invoke(tool_call.get("args", {}))
+            except Exception as exc:
+                logging.exception("Erro ao executar ferramenta %s", tool_name)
+                result = f"Erro ao executar {tool_name}: {exc}"
 
-        outputs.append(ToolMessage(content=str(res), tool_call_id=tool_call["id"], name=tool_name))
-    return {
-        "messages": outputs
-    }
+        outputs.append(
+            ToolMessage(
+                content=str(result),
+                tool_call_id=tool_call["id"],
+                name=tool_name,
+            )
+        )
 
-def router(state: AgentState) -> Literal["tool_node", "physician_analyst",  "END", "transfer_to_physician" , "virtual_assistant", "transfer_to_physician"]:
-    print(">router")
-    last_message= state["messages"][-1]
-    print(f"\n🔍 DEBUG ROUTER:")
-    print(f"Conteúdo: {last_message.content}")
-    print(f"Tool Calls: {getattr(last_message, 'tool_calls', 'Nenhuma')}")
+    return {"messages": outputs}
 
+
+def reception_tools(state: AgentState) -> AgentState:
+    return _execute_tools(
+        state,
+        {
+            "create_patient": create_patient,
+            "check_patient": check_patient,
+        },
+    )
+
+
+def handoff_tools(state: AgentState) -> AgentState:
+    return _execute_tools(state, {"transfer_to_physician": transfer_to_physician})
+
+
+def physician_tools(state: AgentState) -> AgentState:
+    return _execute_tools(state, {"load_exams": load_exams})
+
+
+def route_reception(
+    state: AgentState,
+) -> Literal["reception_tools", "handoff_tools", "END"]:
+    last_message = state["messages"][-1]
+    tool_calls = getattr(last_message, "tool_calls", None)
+    if not tool_calls:
+        return "END"
+
+    if tool_calls[0]["name"] == "transfer_to_physician":
+        return "handoff_tools"
+    return "reception_tools"
+
+
+def route_physician(state: AgentState) -> Literal["physician_tools", "END"]:
+    last_message = state["messages"][-1]
     if getattr(last_message, "tool_calls", None):
-        tool_name = last_message.tool_calls[0]["name"]
-        if tool_name == "transfer_to_physician":
-            return "physician_analyst"
-        return "tool_node"
-
-        #Palavra chave de encaminhamento
-    if "ENCAMINHAR_MEDICO" in str(last_message.content):
-        return "physician_analyst"
+        return "physician_tools"
     return "END"
 
 
-builder = StateGraph(AgentState)
+@lru_cache(maxsize=1)
+def get_graph():
+    init_db()
 
-builder.add_node("virtual_assistant", virtual_assistant)
-builder.add_node("physician_analyst", physician_analyst)
-builder.add_node("tool_node", tool_node)
+    builder = StateGraph(AgentState)
+    builder.add_node("virtual_assistant", virtual_assistant)
+    builder.add_node("physician_analyst", physician_analyst)
+    builder.add_node("reception_tools", reception_tools)
+    builder.add_node("handoff_tools", handoff_tools)
+    builder.add_node("physician_tools", physician_tools)
 
-builder.set_entry_point("virtual_assistant")
+    builder.set_entry_point("virtual_assistant")
+    builder.add_conditional_edges(
+        "virtual_assistant",
+        route_reception,
+        {
+            "reception_tools": "reception_tools",
+            "handoff_tools": "handoff_tools",
+            "END": END,
+        },
+    )
+    builder.add_edge("reception_tools", "virtual_assistant")
+    builder.add_edge("handoff_tools", "physician_analyst")
+    builder.add_conditional_edges(
+        "physician_analyst",
+        route_physician,
+        {
+            "physician_tools": "physician_tools",
+            "END": END,
+        },
+    )
+    builder.add_edge("physician_tools", "physician_analyst")
 
-#Eges da recepcionista
-builder.add_conditional_edges(
-    "virtual_assistant",
-    router,
-    {
-        "tool_node": "tool_node",
-        "physician_analyst": "physician_analyst",
-        "END": END
-    }
-)
+    return builder.compile(checkpointer=MemorySaver())
 
-#EDGE DO MEDICO
-builder.add_conditional_edges(
-    "physician_analyst",
-    router,
-    {
-        "tool_node": "tool_node",
-        "physician_analyst": "physician_analyst",
-        "END": END,
-        "virtual_assistant": "virtual_assistant"
-    }
-)
-builder.add_edge("tool_node", "virtual_assistant")
-memory = MemorySaver()
 
-graph = builder.compile(checkpointer=memory)
-graph.get_graph().draw_mermaid_png(output_file_path="ark.png")
+def ask_agent(user_input: str, thread_id: str = DEFAULT_THREAD_ID) -> list[dict[str, str]]:
+    config = {"configurable": {"thread_id": thread_id}}
+    responses: list[dict[str, str]] = []
 
-thread_id = "paciente_01"
-config = {"configurable": {"thread_id": thread_id}}
-# --- LOOP ---
-print("--- SISTEMA INICIADO ---")
-while True:
-    user_input = input("👤 Você: ")
-    if user_input.lower() in ["sair"]: break
-    
-    # O stream permite ver o processo passo a passo
-    for event in graph.stream(
+    for event in get_graph().stream(
         {"messages": [HumanMessage(content=user_input)]},
-        config=config
+        config=config,
     ):
-        for key, value in event.items():
-            if "messages" in value:
-                msg = value["messages"][-1]
-                if isinstance(msg, AIMessage) and msg.content:
-                    print(f"AI {key}: {msg.content}")
+        for node_name, value in event.items():
+            messages = value.get("messages", [])
+            if not messages:
+                continue
+
+            message = messages[-1]
+            if isinstance(message, AIMessage) and message.content:
+                responses.append(
+                    {
+                        "agent": NODE_LABELS.get(node_name, node_name),
+                        "content": str(message.content),
+                    }
+                )
+
+    if responses:
+        return responses
+
+    return [
+        {
+            "agent": "AIDoctor",
+            "content": "A IA processou a mensagem, mas nao retornou conteudo em texto.",
+        }
+    ]
 
 
+def run_cli() -> None:
+    print("--- SISTEMA INICIADO ---")
+    print("Digite 'sair', 'exit' ou 'quit' para encerrar.")
 
+    while True:
+        user_input = input("Voce: ").strip()
+        if user_input.lower() in {"sair", "exit", "quit"}:
+            break
+        if not user_input:
+            continue
+
+        try:
+            for response in ask_agent(user_input):
+                print(f"{response['agent']}: {response['content']}")
+        except Exception as exc:
+            print(f"Erro: {exc}")
+
+
+if __name__ == "__main__":
+    run_cli()
